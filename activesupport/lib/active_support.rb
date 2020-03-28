@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 #--
-# Copyright (c) 2005-2017 David Heinemeier Hansson
+# Copyright (c) 2005-2020 David Heinemeier Hansson
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -22,16 +24,18 @@
 #++
 
 require "securerandom"
-require_relative "active_support/dependencies/autoload"
-require_relative "active_support/version"
-require_relative "active_support/logger"
-require_relative "active_support/lazy_load_hooks"
-require_relative "active_support/core_ext/date_and_time/compatibility"
+require "active_support/dependencies/autoload"
+require "active_support/version"
+require "active_support/logger"
+require "active_support/lazy_load_hooks"
+require "active_support/core_ext/date_and_time/compatibility"
 
 module ActiveSupport
   extend ActiveSupport::Autoload
 
   autoload :Concern
+  autoload :ActionableError
+  autoload :ConfigurationFile
   autoload :CurrentAttributes
   autoload :Dependencies
   autoload :DescendantsTracker
@@ -39,9 +43,11 @@ module ActiveSupport
   autoload :Executor
   autoload :FileUpdateChecker
   autoload :EventedFileUpdateChecker
+  autoload :ForkTracker
   autoload :LogSubscriber
   autoload :Notifications
   autoload :Reloader
+  autoload :SecureCompareRotator
 
   eager_autoload do
     autoload :BacktraceCleaner
@@ -51,6 +57,7 @@ module ActiveSupport
     autoload :Callbacks
     autoload :Configurable
     autoload :Deprecation
+    autoload :Digest
     autoload :Gzip
     autoload :Inflector
     autoload :JSON
@@ -63,6 +70,7 @@ module ActiveSupport
     autoload :OrderedHash
     autoload :OrderedOptions
     autoload :StringInquirer
+    autoload :EnvironmentInquirer
     autoload :TaggedLogging
     autoload :XmlMini
     autoload :ArrayInquirer
@@ -80,24 +88,20 @@ module ActiveSupport
 
   cattr_accessor :test_order # :nodoc:
 
-  def self.halt_callback_chains_on_return_false
-    ActiveSupport::Deprecation.warn(<<-MSG.squish)
-      ActiveSupport.halt_callback_chains_on_return_false is deprecated and will be removed in Rails 5.2.
-    MSG
-  end
-
-  def self.halt_callback_chains_on_return_false=(value)
-    ActiveSupport::Deprecation.warn(<<-MSG.squish)
-      ActiveSupport.halt_callback_chains_on_return_false= is deprecated and will be removed in Rails 5.2.
-    MSG
-  end
-
   def self.to_time_preserves_timezone
     DateAndTime::Compatibility.preserve_timezone
   end
 
   def self.to_time_preserves_timezone=(value)
     DateAndTime::Compatibility.preserve_timezone = value
+  end
+
+  def self.utc_to_local_returns_utc_offset_times
+    DateAndTime::Compatibility.utc_to_local_returns_utc_offset_times
+  end
+
+  def self.utc_to_local_returns_utc_offset_times=(value)
+    DateAndTime::Compatibility.utc_to_local_returns_utc_offset_times = value
   end
 end
 

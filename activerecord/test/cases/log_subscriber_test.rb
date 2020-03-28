@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "cases/helper"
 require "models/binary"
 require "models/developer"
@@ -31,8 +33,9 @@ class LogSubscriberTest < ActiveRecord::TestCase
       super
     end
 
-    def debug(message)
-      @debugs << message
+    def debug(progname = nil, &block)
+      @debugs << progname
+      super
     end
   end
 
@@ -41,6 +44,7 @@ class LogSubscriberTest < ActiveRecord::TestCase
   def setup
     @old_logger = ActiveRecord::Base.logger
     Developer.primary_key
+    ActiveRecord::Base.connection.materialize_transactions
     super
     ActiveRecord::LogSubscriber.attach_to(:active_record)
   end
@@ -89,6 +93,16 @@ class LogSubscriberTest < ActiveRecord::TestCase
     SQL_COLORINGS.each do |verb, color_regex|
       logger.sql(Event.new(0.9, sql: verb.to_s))
       assert_match(/#{REGEXP_BOLD}#{color_regex}#{verb}#{REGEXP_CLEAR}/i, logger.debugs.last)
+    end
+  end
+
+  def test_logging_sql_coloration_disabled
+    logger = TestDebugLogSubscriber.new
+    logger.colorize_logging = false
+
+    SQL_COLORINGS.each do |verb, color_regex|
+      logger.sql(Event.new(0.9, sql: verb.to_s))
+      assert_no_match(/#{REGEXP_BOLD}#{color_regex}#{verb}#{REGEXP_CLEAR}/i, logger.debugs.last)
     end
   end
 
@@ -167,6 +181,36 @@ class LogSubscriberTest < ActiveRecord::TestCase
     assert_equal 1, @logger.logged(:debug).size
     assert_match(/Developer Exists/, @logger.logged(:debug).last)
     assert_match(/SELECT .*?FROM .?developers.?/i, @logger.logged(:debug).last)
+  end
+
+  def test_vebose_query_logs
+    ActiveRecord::Base.verbose_query_logs = true
+
+    logger = TestDebugLogSubscriber.new
+    logger.sql(Event.new(0, sql: "hi mom!"))
+    assert_equal 2, @logger.logged(:debug).size
+    assert_match(/↳/, @logger.logged(:debug).last)
+  ensure
+    ActiveRecord::Base.verbose_query_logs = false
+  end
+
+  def test_verbose_query_with_ignored_callstack
+    ActiveRecord::Base.verbose_query_logs = true
+
+    logger = TestDebugLogSubscriber.new
+    def logger.extract_query_source_location(*); nil; end
+
+    logger.sql(Event.new(0, sql: "hi mom!"))
+    assert_equal 1, @logger.logged(:debug).size
+    assert_no_match(/↳/, @logger.logged(:debug).last)
+  ensure
+    ActiveRecord::Base.verbose_query_logs = false
+  end
+
+  def test_verbose_query_logs_disabled_by_default
+    logger = TestDebugLogSubscriber.new
+    logger.sql(Event.new(0, sql: "hi mom!"))
+    assert_no_match(/↳/, @logger.logged(:debug).last)
   end
 
   def test_cached_queries

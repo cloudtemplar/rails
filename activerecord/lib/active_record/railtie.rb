@@ -1,5 +1,8 @@
+# frozen_string_literal: true
+
 require "active_record"
 require "rails"
+require "active_support/core_ext/object/try"
 require "active_model/railtie"
 
 # For now, action_controller must always be present with
@@ -25,6 +28,10 @@ module ActiveRecord
 
     config.active_record.use_schema_cache_dump = true
     config.active_record.maintain_test_schema = true
+    config.active_record.has_many_inversing = false
+
+    config.active_record.sqlite3 = ActiveSupport::OrderedOptions.new
+    config.active_record.sqlite3.represent_boolean_as_integer = nil
 
     config.eager_load_namespaces << ActiveRecord
 
@@ -48,16 +55,18 @@ module ActiveRecord
     # to avoid cross references when loading a constant for the
     # first time. Also, make it output to STDERR.
     console do |app|
-      require_relative "railties/console_sandbox" if app.sandbox?
-      require_relative "base"
+      require "active_record/railties/console_sandbox" if app.sandbox?
+      require "active_record/base"
       unless ActiveSupport::Logger.logger_outputs_to?(Rails.logger, STDERR, STDOUT)
         console = ActiveSupport::Logger.new(STDERR)
+        console.level = Rails.logger.level
         Rails.logger.extend ActiveSupport::Logger.broadcast console
       end
+      ActiveRecord::Base.verbose_query_logs = false
     end
 
     runner do
-      require_relative "base"
+      require "active_record/base"
     end
 
     initializer "active_record.initialize_timezone" do
@@ -71,10 +80,48 @@ module ActiveRecord
       ActiveSupport.on_load(:active_record) { self.logger ||= ::Rails.logger }
     end
 
-    initializer "active_record.migration_error" do
+    initializer "active_record.backtrace_cleaner" do
+      ActiveSupport.on_load(:active_record) { LogSubscriber.backtrace_cleaner = ::Rails.backtrace_cleaner }
+    end
+
+    initializer "active_record.migration_error" do |app|
       if config.active_record.delete(:migration_error) == :page_load
         config.app_middleware.insert_after ::ActionDispatch::Callbacks,
-          ActiveRecord::Migration::CheckPending
+          ActiveRecord::Migration::CheckPending,
+          file_watcher: app.config.file_watcher
+      end
+    end
+
+    initializer "active_record.database_selector" do
+      if options = config.active_record.delete(:database_selector)
+        resolver = config.active_record.delete(:database_resolver)
+        operations = config.active_record.delete(:database_resolver_context)
+        config.app_middleware.use ActiveRecord::Middleware::DatabaseSelector, resolver, operations, options
+      end
+    end
+
+    initializer "Check for cache versioning support" do
+      config.after_initialize do |app|
+        ActiveSupport.on_load(:active_record) do
+          if app.config.active_record.cache_versioning && Rails.cache
+            unless Rails.cache.class.try(:supports_cache_versioning?)
+              raise <<-end_error
+
+You're using a cache store that doesn't support native cache versioning.
+Your best option is to upgrade to a newer version of #{Rails.cache.class}
+that supports cache versioning (#{Rails.cache.class}.supports_cache_versioning? #=> true).
+
+Next best, switch to a different cache store that does support cache versioning:
+https://guides.rubyonrails.org/caching_with_rails.html#cache-stores.
+
+To keep using the current cache store, you can turn off cache versioning entirely:
+
+    config.active_record.cache_versioning = false
+
+              end_error
+            end
+          end
+        end
       end
     end
 
@@ -82,16 +129,46 @@ module ActiveRecord
       if config.active_record.delete(:use_schema_cache_dump)
         config.after_initialize do |app|
           ActiveSupport.on_load(:active_record) do
-            filename = File.join(app.config.paths["db"].first, "schema_cache.yml")
+            db_config = ActiveRecord::Base.configurations.configs_for(
+              env_name: Rails.env,
+              name: "primary",
+            )
+            filename = ActiveRecord::Tasks::DatabaseTasks.cache_dump_filename(
+              "primary",
+              schema_cache_path: db_config&.schema_cache_path,
+            )
 
-            if File.file?(filename)
-              cache = YAML.load(File.read(filename))
-              if cache.version == ActiveRecord::Migrator.current_version
-                connection.schema_cache = cache
-                connection_pool.schema_cache = cache.dup
-              else
-                warn "Ignoring db/schema_cache.yml because it has expired. The current schema version is #{ActiveRecord::Migrator.current_version}, but the one in the cache is #{cache.version}."
-              end
+            cache = ActiveRecord::ConnectionAdapters::SchemaCache.load_from(filename)
+            next if cache.nil?
+
+            current_version = ActiveRecord::Migrator.current_version
+            next if current_version.nil?
+
+            if cache.version != current_version
+              warn "Ignoring #{filename} because it has expired. The current schema version is #{current_version}, but the one in the cache is #{cache.version}."
+              next
+            end
+
+            connection_pool.set_schema_cache(cache.dup)
+          end
+        end
+      end
+    end
+
+    initializer "active_record.define_attribute_methods" do |app|
+      config.after_initialize do
+        ActiveSupport.on_load(:active_record) do
+          if app.config.eager_load
+            descendants.each do |model|
+              # SchemaMigration and InternalMetadata both override `table_exists?`
+              # to bypass the schema cache, so skip them to avoid the extra queries.
+              next if model._internal?
+
+              # If there's no connection yet, or the schema cache doesn't have the columns
+              # hash for the model cached, `define_attribute_methods` would trigger a query.
+              next unless model.connected? && model.connection.schema_cache.columns_hash?(model.table_name)
+
+              model.define_attribute_methods
             end
           end
         end
@@ -101,14 +178,26 @@ module ActiveRecord
     initializer "active_record.warn_on_records_fetched_greater_than" do
       if config.active_record.warn_on_records_fetched_greater_than
         ActiveSupport.on_load(:active_record) do
-          require_relative "relation/record_fetch_warning"
+          require "active_record/relation/record_fetch_warning"
         end
       end
     end
 
     initializer "active_record.set_configs" do |app|
       ActiveSupport.on_load(:active_record) do
-        app.config.active_record.each do |k, v|
+        configs = app.config.active_record
+
+        represent_boolean_as_integer = configs.sqlite3.delete(:represent_boolean_as_integer)
+
+        unless represent_boolean_as_integer.nil?
+          ActiveSupport.on_load(:active_record_sqlite3adapter) do
+            ActiveRecord::ConnectionAdapters::SQLite3Adapter.represent_boolean_as_integer = represent_boolean_as_integer
+          end
+        end
+
+        configs.delete(:sqlite3)
+
+        configs.each do |k, v|
           send "#{k}=", v
         end
       end
@@ -118,28 +207,15 @@ module ActiveRecord
     # and then establishes the connection.
     initializer "active_record.initialize_database" do
       ActiveSupport.on_load(:active_record) do
+        self.connection_handlers = { writing_role => ActiveRecord::Base.default_connection_handler }
         self.configurations = Rails.application.config.database_configuration
-
-        begin
-          establish_connection
-        rescue ActiveRecord::NoDatabaseError
-          warn <<-end_warning
-Oops - You have a database configured, but it doesn't exist yet!
-
-Here's how to get started:
-
-  1. Configure your database in config/database.yml.
-  2. Run `bin/rails db:create` to create the database.
-  3. Run `bin/rails db:setup` to load your database schema.
-end_warning
-          raise
-        end
+        establish_connection
       end
     end
 
     # Expose database runtime to controller for logging.
     initializer "active_record.log_runtime" do
-      require_relative "railties/controller_runtime"
+      require "active_record/railties/controller_runtime"
       ActiveSupport.on_load(:action_controller) do
         include ActiveRecord::Railties::ControllerRuntime
       end
@@ -157,9 +233,7 @@ end_warning
     end
 
     initializer "active_record.set_executor_hooks" do
-      ActiveSupport.on_load(:active_record) do
-        ActiveRecord::QueryCache.install_executor_hooks
-      end
+      ActiveRecord::QueryCache.install_executor_hooks
     end
 
     initializer "active_record.add_watchable_files" do |app|
@@ -170,8 +244,23 @@ end_warning
     initializer "active_record.clear_active_connections" do
       config.after_initialize do
         ActiveSupport.on_load(:active_record) do
+          # Ideally the application doesn't connect to the database during boot,
+          # but sometimes it does. In case it did, we want to empty out the
+          # connection pools so that a non-database-using process (e.g. a master
+          # process in a forking server model) doesn't retain a needless
+          # connection. If it was needed, the incremental cost of reestablishing
+          # this connection is trivial: the rest of the pool would need to be
+          # populated anyway.
+
           clear_active_connections!
+          flush_idle_connections!
         end
+      end
+    end
+
+    initializer "active_record.set_filter_attributes" do
+      ActiveSupport.on_load(:active_record) do
+        self.filter_attributes += Rails.application.config.filter_parameters
       end
     end
   end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class Book < ActiveRecord::Base
   belongs_to :author
 
@@ -16,9 +18,16 @@ class Book < ActiveRecord::Base
   enum font_size: [:small, :medium, :large], _prefix: :with, _suffix: true
   enum difficulty: [:easy, :medium, :hard], _suffix: :to_read
   enum cover: { hard: "hard", soft: "soft" }
+  enum boolean_status: { enabled: true, disabled: false }
 
   def published!
     super
     "do publish work..."
   end
+end
+
+class PublishedBook < ActiveRecord::Base
+  self.table_name = "books"
+
+  validates_uniqueness_of :isbn
 end

@@ -1,7 +1,9 @@
-require_relative "duration"
-require_relative "values/time_zone"
-require_relative "core_ext/object/acts_like"
-require_relative "core_ext/date_and_time/compatibility"
+# frozen_string_literal: true
+
+require "active_support/duration"
+require "active_support/values/time_zone"
+require "active_support/core_ext/object/acts_like"
+require "active_support/core_ext/date_and_time/compatibility"
 
 module ActiveSupport
   # A Time-like class that can represent a time in any time zone. Necessary
@@ -41,8 +43,8 @@ module ActiveSupport
       "Time"
     end
 
-    PRECISIONS = Hash.new { |h, n| h[n] = "%FT%T.%#{n}N".freeze }
-    PRECISIONS[0] = "%FT%T".freeze
+    PRECISIONS = Hash.new { |h, n| h[n] = "%FT%T.%#{n}N" }
+    PRECISIONS[0] = "%FT%T"
 
     include Comparable, DateAndTime::Compatibility
     attr_reader :time_zone
@@ -55,12 +57,12 @@ module ActiveSupport
 
     # Returns a <tt>Time</tt> instance that represents the time in +time_zone+.
     def time
-      @time ||= period.to_local(@utc)
+      @time ||= incorporate_utc_offset(@utc, utc_offset)
     end
 
     # Returns a <tt>Time</tt> instance of the simultaneous time in the UTC timezone.
     def utc
-      @utc ||= period.to_utc(@time)
+      @utc ||= incorporate_utc_offset(@time, -utc_offset)
     end
     alias_method :comparable_time, :utc
     alias_method :getgm, :utc
@@ -102,13 +104,13 @@ module ActiveSupport
     #   Time.zone = 'Eastern Time (US & Canada)'    # => 'Eastern Time (US & Canada)'
     #   Time.zone.now.utc?                          # => false
     def utc?
-      period.offset.abbreviation == :UTC || period.offset.abbreviation == :UCT
+      zone == "UTC" || zone == "UCT"
     end
     alias_method :gmt?, :utc?
 
     # Returns the offset from current time to UTC time in seconds.
     def utc_offset
-      period.utc_total_offset
+      period.observed_utc_offset
     end
     alias_method :gmt_offset, :utc_offset
     alias_method :gmtoff, :utc_offset
@@ -130,7 +132,7 @@ module ActiveSupport
     #   Time.zone = 'Eastern Time (US & Canada)'   # => "Eastern Time (US & Canada)"
     #   Time.zone.now.zone # => "EST"
     def zone
-      period.zone_identifier.to_s
+      period.abbreviation
     end
 
     # Returns a string of the object's date, time, zone, and offset from UTC.
@@ -145,7 +147,7 @@ module ActiveSupport
     #
     #   Time.zone.now.xmlschema  # => "2014-12-04T11:02:37-05:00"
     def xmlschema(fraction_digits = 0)
-      "#{time.strftime(PRECISIONS[fraction_digits.to_i])}#{formatted_offset(true, 'Z'.freeze)}"
+      "#{time.strftime(PRECISIONS[fraction_digits.to_i])}#{formatted_offset(true, 'Z')}"
     end
     alias_method :iso8601, :xmlschema
     alias_method :rfc3339, :xmlschema
@@ -223,6 +225,8 @@ module ActiveSupport
     def <=>(other)
       utc <=> other
     end
+    alias_method :before?, :<
+    alias_method :after?, :>
 
     # Returns true if the current object's time is within the specified
     # +min+ and +max+ time.
@@ -240,6 +244,20 @@ module ActiveSupport
     def today?
       time.today?
     end
+
+    # Returns true if the current object's time falls within
+    # the next day (tomorrow).
+    def tomorrow?
+      time.tomorrow?
+    end
+    alias :next_day? :tomorrow?
+
+    # Returns true if the current object's time falls within
+    # the previous day (yesterday).
+    def yesterday?
+      time.yesterday?
+    end
+    alias :prev_day? :yesterday?
 
     # Returns true if the current object's time is in the future.
     def future?
@@ -282,8 +300,10 @@ module ActiveSupport
     alias_method :since, :+
     alias_method :in, :+
 
-    # Returns a new TimeWithZone object that represents the difference between
-    # the current object's time and the +other+ time.
+    # Subtracts an interval of time and returns a new TimeWithZone object unless
+    # the other value `acts_like?` time. Then it will return a Float of the difference
+    # between the two times that represents the difference between the current
+    # object's time and the +other+ time.
     #
     #   Time.zone = 'Eastern Time (US & Canada)' # => 'Eastern Time (US & Canada)'
     #   now = Time.zone.now # => Mon, 03 Nov 2014 00:26:28 EST -05:00
@@ -298,6 +318,12 @@ module ActiveSupport
     #
     #   now - 24.hours      # => Sun, 02 Nov 2014 01:26:28 EDT -04:00
     #   now - 1.day         # => Sun, 02 Nov 2014 00:26:28 EDT -04:00
+    #
+    # If both the TimeWithZone object and the other value act like Time, a Float
+    # will be returned.
+    #
+    #   Time.zone.now - 1.day.ago # => 86399.999967
+    #
     def -(other)
       if other.acts_like?(:time)
         to_time - other.to_time
@@ -512,6 +538,16 @@ module ActiveSupport
     end
 
     private
+      SECONDS_PER_DAY = 86400
+
+      def incorporate_utc_offset(time, offset)
+        if time.kind_of?(Date)
+          time + Rational(offset, SECONDS_PER_DAY)
+        else
+          time + offset
+        end
+      end
+
       def get_period_and_ensure_valid_local_time(period)
         # we don't want a Time.local instance enforcing its own DST rules as well,
         # so transfer time values to a utc constructor if necessary

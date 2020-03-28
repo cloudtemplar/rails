@@ -1,17 +1,38 @@
-*   ActionCable's `redis` adapter allows for other common redis-rb options (`host`, `port`, `db`, `password`) in cable.yml.
+*   `ActionCable::Connection::Base` now allows intercepting unhandled exceptions
+    with `rescue_from` before they are logged, which is useful for error reporting
+    tools and other integrations.
 
-    Previously, it accepts only a [redis:// url](https://www.iana.org/assignments/uri-schemes/prov/redis) as an option.
-    While we can add all of these options to the `url` itself, it is not explicitly documented. This alternative setup
-    is shown as the first example in the [Redis rubygem](https://github.com/redis/redis-rb#getting-started), which
-    makes this set of options as sensible as using just the `url`.
+    *Justin Talbott*
 
-    *Marc Rendl Ignacio*
+*   Add `ActionCable::Channel#stream_or_reject_for` to stream if record is present, otherwise reject the connection
 
-*   ActionCable socket errors are now logged to the console
+    *Atul Bhosale*
 
-    Previously any socket errors were ignored and this made it hard to diagnose socket issues (e.g. as discussed in #28362).
+*   Add `ActionCable::Channel#stop_stream_from` and `#stop_stream_for` to unsubscribe from a specific stream.
 
-    *Edward Poot*
+    *Zhang Kang*
+
+*   Add PostgreSQL subscription connection identificator.
+
+    Now you can distinguish Action Cable PostgreSQL subscription connections among others.
+    Also, you can set custom `id` in `cable.yml` configuration.
+
+    ```sql
+    SELECT application_name FROM pg_stat_activity;
+    /*
+        application_name
+    ------------------------
+    psql
+    ActionCable-PID-42
+    (2 rows)
+    */
+    ```
+
+    *Sergey Ponomarev*
+
+*   Subscription confirmations and rejections are now logged at the `DEBUG` level instead of `INFO`.
+
+    *DHH*
 
 
-Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/actioncable/CHANGELOG.md) for previous changes.
+Please check [6-0-stable](https://github.com/rails/rails/blob/6-0-stable/actioncable/CHANGELOG.md) for previous changes.

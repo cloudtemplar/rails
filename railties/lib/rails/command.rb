@@ -1,8 +1,8 @@
+# frozen_string_literal: true
+
 require "active_support"
-require "active_support/dependencies/autoload"
 require "active_support/core_ext/enumerable"
 require "active_support/core_ext/object/blank"
-require "active_support/core_ext/hash/transform_values"
 
 require "thor"
 
@@ -10,6 +10,7 @@ module Rails
   module Command
     extend ActiveSupport::Autoload
 
+    autoload :Spellchecker
     autoload :Behavior
     autoload :Base
 
@@ -39,12 +40,19 @@ module Rails
         command_name, namespace = "help", "help" if command_name.blank? || HELP_MAPPINGS.include?(command_name)
         command_name, namespace = "version", "version" if %w( -v --version ).include?(command_name)
 
+        # isolate ARGV to ensure that commands depend only on the args they are given
+        args = args.dup # args might *be* ARGV so dup before clearing
+        old_argv = ARGV.dup
+        ARGV.clear
+
         command = find_by_namespace(namespace, command_name)
         if command && command.all_commands[command_name]
           command.perform(command_name, args, config)
         else
           find_by_namespace("rake").perform(full_namespace, args, config)
         end
+      ensure
+        ARGV.replace(old_argv)
       end
 
       # Rails finds namespaces similar to Thor, it only adds one rule:
@@ -81,20 +89,21 @@ module Rails
       end
 
       def print_commands # :nodoc:
-        sorted_groups.each { |b, n| print_list(b, n) }
-      end
-
-      def sorted_groups # :nodoc:
-        lookup!
-
-        groups = (subclasses - hidden_commands).group_by { |c| c.namespace.split(":").first }
-        groups.transform_values! { |commands| commands.flat_map(&:printing_commands).sort }
-
-        rails = groups.delete("rails")
-        [[ "rails", rails ]] + groups.sort.to_a
+        commands.each { |command| puts("  #{command}") }
       end
 
       private
+        COMMANDS_IN_USAGE = %w(generate console server test test:system dbconsole new)
+        private_constant :COMMANDS_IN_USAGE
+
+        def commands
+          lookup!
+
+          visible_commands = (subclasses - hidden_commands).flat_map(&:printing_commands)
+
+          (visible_commands - COMMANDS_IN_USAGE).sort
+        end
+
         def command_type # :doc:
           @command_type ||= "command"
         end

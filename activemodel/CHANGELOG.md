@@ -1,37 +1,31 @@
-*   Fix regression in numericality validator when comparing Decimal and Float input
-    values with more scale than the schema.
+*   `*_previously_changed?` accepts `:from` and `:to` keyword arguments like `*_changed?`.
 
-    *Bradley Priest*
+        topic.update!(status: :archived)
+        topic.status_previously_changed?(from: "active", to: "archived")
+        # => true
 
-*   Fix methods `#keys`, `#values` in `ActiveModel::Errors`.
+    *George Claghorn*
 
-    Change `#keys` to only return the keys that don't have empty messages.
+*   Raise FrozenError when trying to write attributes that aren't backed by the database on an object that is frozen:
 
-    Change `#values` to only return the not empty values.
+        class Animal
+          include ActiveModel::Attributes
+          attribute :age
+        end
 
-    Example:
+        animal = Animal.new
+        animal.freeze
+        animal.age = 25 # => FrozenError, "can't modify a frozen Animal"
 
-        # Before
-        person = Person.new
-        person.errors.keys     # => []
-        person.errors.values   # => []
-        person.errors.messages # => {}
-        person.errors[:name]   # => []
-        person.errors.messages # => {:name => []}
-        person.errors.keys     # => [:name]
-        person.errors.values   # => [[]]
+    *Josh Brody*
 
-        # After
-        person = Person.new
-        person.errors.keys     # => []
-        person.errors.values   # => []
-        person.errors.messages # => {}
-        person.errors[:name]   # => []
-        person.errors.messages # => {:name => []}
-        person.errors.keys     # => []
-        person.errors.values   # => []
+*   Add `*_previously_was` attribute methods when dirty tracking. Example:
 
-    *bogdanvlviv*
+        pirate.update(catchphrase: "Ahoy!")
+        pirate.previous_changes["catchphrase"] # => ["Thar She Blows!", "Ahoy!"]
+        pirate.catchphrase_previously_was # => "Thar She Blows!"
+
+    *DHH*
 
 
-Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/activemodel/CHANGELOG.md) for previous changes.
+Please check [6-0-stable](https://github.com/rails/rails/blob/6-0-stable/activemodel/CHANGELOG.md) for previous changes.

@@ -1,6 +1,10 @@
+# frozen_string_literal: true
+
 module ActiveRecord
   class LogSubscriber < ActiveSupport::LogSubscriber
     IGNORE_PAYLOAD_NAMES = ["SCHEMA", "EXPLAIN"]
+
+    class_attribute :backtrace_cleaner, default: ActiveSupport::BacktraceCleaner.new
 
     def self.runtime=(value)
       ActiveRecord::RuntimeRegistry.sql_runtime = value
@@ -28,15 +32,19 @@ module ActiveRecord
       sql   = payload[:sql]
       binds = nil
 
-      unless (payload[:binds] || []).empty?
+      if payload[:binds]&.any?
         casted_params = type_casted_binds(payload[:type_casted_binds])
-        binds = "  " + payload[:binds].zip(casted_params).map { |attr, value|
-          render_bind(attr, value)
-        }.inspect
+
+        binds = []
+        payload[:binds].each_with_index do |attr, i|
+          binds << render_bind(attr, casted_params[i])
+        end
+        binds = binds.inspect
+        binds.prepend("  ")
       end
 
       name = colorize_payload_name(name, payload[:name])
-      sql  = color(sql, sql_color(sql), true)
+      sql  = color(sql, sql_color(sql), true) if colorize_logging
 
       debug "  #{name}  #{sql}#{binds}"
     end
@@ -87,6 +95,26 @@ module ActiveRecord
 
       def logger
         ActiveRecord::Base.logger
+      end
+
+      def debug(progname = nil, &block)
+        return unless super
+
+        if ActiveRecord::Base.verbose_query_logs
+          log_query_source
+        end
+      end
+
+      def log_query_source
+        source = extract_query_source_location(caller)
+
+        if source
+          logger.debug("  ↳ #{source}")
+        end
+      end
+
+      def extract_query_source_location(locations)
+        backtrace_cleaner.clean(locations.lazy).first
       end
   end
 end

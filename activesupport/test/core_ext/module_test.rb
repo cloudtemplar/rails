@@ -1,4 +1,6 @@
-require "abstract_unit"
+# frozen_string_literal: true
+
+require_relative "../abstract_unit"
 require "active_support/core_ext/module"
 
 Somewhere = Struct.new(:street, :city) do
@@ -22,8 +24,11 @@ Someone = Struct.new(:name, :place) do
   self::FAILED_DELEGATE_LINE_2 = __LINE__ + 1
   delegate :bar, to: :place, allow_nil: true
 
-  private
+  def kw_send(method:)
+    public_send(method)
+  end
 
+  private
     def private_name
       "Private"
     end
@@ -90,6 +95,16 @@ DecoratedTester = Struct.new(:client) do
   delegate_missing_to :client
 end
 
+class DecoratedMissingAllowNil
+  delegate_missing_to :case, allow_nil: true
+
+  attr_reader :case
+
+  def initialize(kase)
+    @case = kase
+  end
+end
+
 class DecoratedReserved
   delegate_missing_to :case
 
@@ -97,6 +112,24 @@ class DecoratedReserved
 
   def initialize(kase)
     @case = kase
+  end
+end
+
+class Maze
+  attr_accessor :cavern, :passages
+end
+
+class Cavern
+  delegate_missing_to :target
+
+  attr_reader :maze
+
+  def initialize(maze)
+    @maze = maze
+  end
+
+  def target
+    @maze.passages = :twisty
   end
 end
 
@@ -345,7 +378,7 @@ class ModuleTest < ActiveSupport::TestCase
 
   def test_delegation_with_method_arguments
     has_block = HasBlock.new(Block.new)
-    assert has_block.hello?
+    assert_predicate has_block, :hello?
   end
 
   def test_delegate_missing_to_with_method
@@ -354,6 +387,10 @@ class ModuleTest < ActiveSupport::TestCase
 
   def test_delegate_missing_to_with_reserved_methods
     assert_equal "David", DecoratedReserved.new(@david).name
+  end
+
+  def test_delegate_missing_to_with_keyword_methods
+    assert_equal "David", DecoratedReserved.new(@david).kw_send(method: "name")
   end
 
   def test_delegate_missing_to_does_not_delegate_to_private_methods
@@ -372,10 +409,22 @@ class ModuleTest < ActiveSupport::TestCase
     assert_match(/undefined method `my_fake_method' for/, e.message)
   end
 
+  def test_delegate_missing_to_raises_delegation_error_if_target_nil
+    e = assert_raises(Module::DelegationError) do
+      DecoratedTester.new(nil).name
+    end
+
+    assert_equal "name delegated to client, but client is nil", e.message
+  end
+
+  def test_delegate_missing_to_returns_nil_if_allow_nil_and_nil_target
+    assert_nil DecoratedMissingAllowNil.new(nil).name
+  end
+
   def test_delegate_missing_to_affects_respond_to
-    assert DecoratedTester.new(@david).respond_to?(:name)
-    assert_not DecoratedTester.new(@david).respond_to?(:private_name)
-    assert_not DecoratedTester.new(@david).respond_to?(:my_fake_method)
+    assert_respond_to DecoratedTester.new(@david), :name
+    assert_not_respond_to DecoratedTester.new(@david), :private_name
+    assert_not_respond_to DecoratedTester.new(@david), :my_fake_method
 
     assert DecoratedTester.new(@david).respond_to?(:name, true)
     assert_not DecoratedTester.new(@david).respond_to?(:private_name, true)
@@ -386,6 +435,17 @@ class ModuleTest < ActiveSupport::TestCase
     assert_equal 42, DecoratedTester.new(@david).extra_missing
 
     assert_respond_to DecoratedTester.new(@david), :extra_missing
+  end
+
+  def test_delegate_missing_to_does_not_interfere_with_marshallization
+    maze = Maze.new
+    maze.cavern = Cavern.new(maze)
+
+    array = [maze, nil]
+    serialized_array = Marshal.dump(array)
+    deserialized_array = Marshal.load(serialized_array)
+
+    assert_nil deserialized_array[1]
   end
 
   def test_delegate_with_case
@@ -404,8 +464,8 @@ class ModuleTest < ActiveSupport::TestCase
 
     place = location.new(Somewhere.new("Such street", "Sad city"))
 
-    assert_not place.respond_to?(:street)
-    assert_not place.respond_to?(:city)
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
 
     assert place.respond_to?(:street, true) # Asking for private method
     assert place.respond_to?(:city, true)
@@ -422,12 +482,79 @@ class ModuleTest < ActiveSupport::TestCase
 
     place = location.new(Somewhere.new("Such street", "Sad city"))
 
-    assert_not place.respond_to?(:street)
-    assert_not place.respond_to?(:city)
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
 
-    assert_not place.respond_to?(:the_street)
+    assert_not_respond_to place, :the_street
     assert place.respond_to?(:the_street, true)
-    assert_not place.respond_to?(:the_city)
+    assert_not_respond_to place, :the_city
     assert place.respond_to?(:the_city, true)
+  end
+
+  def test_private_delegate_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, :city, to: :@place, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
+
+    assert place.respond_to?(:street, true) # Asking for private method
+    assert place.respond_to?(:city, true)
+  end
+
+  def test_some_public_some_private_delegate_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, to: :@place)
+      delegate(:city, to: :@place, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_respond_to place, :street
+    assert_not_respond_to place, :city
+
+    assert place.respond_to?(:city, true) # Asking for private method
+  end
+
+  def test_private_delegate_prefixed_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, :city, to: :@place, prefix: :the, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_not_respond_to place, :the_street
+    assert place.respond_to?(:the_street, true)
+    assert_not_respond_to place, :the_city
+    assert place.respond_to?(:the_city, true)
+  end
+
+  def test_delegate_with_private_option_returns_names_of_delegate_methods
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+    end
+
+    assert_equal [:street, :city],
+      location.delegate(:street, :city, to: :@place, private: true)
+
+    assert_equal [:the_street, :the_city],
+      location.delegate(:street, :city, to: :@place, prefix: :the, private: true)
   end
 end

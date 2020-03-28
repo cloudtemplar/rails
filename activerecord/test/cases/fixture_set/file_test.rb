@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "cases/helper"
 require "tempfile"
 
@@ -133,12 +135,6 @@ END
         File.open(::File.join(FIXTURES_ROOT, "other_posts.yml")) do |fh|
           assert_equal "Post", fh.model_class
         end
-      end
-
-      def test_erb_filename
-        filename = "filename.yaml"
-        erb = File.new(filename).send(:prepare_erb, "<% Rails.env %>\n")
-        assert_equal erb.filename, filename
       end
 
       private
